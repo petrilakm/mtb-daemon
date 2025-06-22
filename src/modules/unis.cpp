@@ -9,7 +9,7 @@ MtbUnis::MtbUnis(uint8_t addr) : MtbModule(addr) {
 	std::fill(this->whoSetOutput.begin(), this->whoSetOutput.end(), nullptr);
 }
 
-bool MtbUni::fwDeprecated() const {
+bool MtbUnis::fwDeprecated() const {
 	return (this->busModuleInfo.uint_fw_version() <= UNIS_FW_DEPRECATED);
 }
 
@@ -25,11 +25,11 @@ QJsonObject MtbUnis::moduleInfo(bool state, bool config) const {
 
 	if (state && this->active && !this->busModuleInfo.inBootloader()) {
 		unis["state"] = QJsonObject{
-			{"outputs", outputsToJson(this->outputsConfirmed)},
-			{"inputs", inputsToJson(this->inputs)},
-			{"inputsPacked", this->inputs},
-		};
-	}
+		                    {"outputs", outputsToJson(this->outputsConfirmed)},
+		                    {"inputs", inputsToJson(this->inputs)},
+		                    {"inputsPacked", (int) this->inputs},
+	                    };
+	};
 
 	response[moduleTypeToStr(this->type)] = unis;
 	return response;
@@ -177,7 +177,7 @@ void MtbUnis::mtbBusOutputsSet(const std::vector<uint8_t>& data) {
 
 QJsonObject MtbUnis::outputsToJson(const std::array<uint8_t, UNIS_OUT_CNT> &outputs) {
 	QJsonObject result;
-	for (size_t i = 0; i < UNIS_IO_CNT; i++) {
+	for (size_t i = 0; i < UNIS_OUT_CNT; i++) {
 		QJsonObject output;
 
 		if ((outputs[i] & 0x80) > 0) {
@@ -193,23 +193,17 @@ QJsonObject MtbUnis::outputsToJson(const std::array<uint8_t, UNIS_OUT_CNT> &outp
 
 		result[QString::number(i)] = output;
 	}
-	for (size_t i = UNIS_IO_CNT; i < UNIS_OUT_CNT; i++) {
-		QJsonObject output;
-		output["type"] = "plain";
-		output["value"] = outputs[i] & 1;
-		result[QString::number(i)] = output;
-	}
 	return result;
 }
 
-QJsonObject MtbUnis::inputsToJson(uint16_t inputs) {
+QJsonObject MtbUnis::inputsToJson(uint32_t inputs) {
 	QJsonArray json;
-	uint16_t _inputs = inputs;
-	for (size_t i = 0; i < UNIS_IN_CNT; i++) {
+	uint32_t _inputs = inputs;
+	for (size_t i = 0; i < UNIS_INALL_CNT; i++) {
 		json.push_back(static_cast<bool>(_inputs&1));
 		_inputs >>= 1;
 	}
-	return {{"full", json}, {"packed", inputs}};
+	return {{"full", json}, {"packed", (int) inputs}};
 }
 
 void MtbUnis::mtbBusOutputsNotSet(Mtb::CmdError error) {
@@ -382,33 +376,22 @@ std::vector<QTcpSocket*> MtbUnis::outputSetters() const {
 std::vector<uint8_t> MtbUnis::mtbBusOutputsData() const {
 	// Set outputs data based on diff in this->outputsWant
 	const std::array<uint8_t, UNIS_OUT_CNT> &outputs = this->outputsWant;
-	std::vector<uint8_t> data {0, 0, 0, 0, 0, 0};
+	// data - 4 bytes = mask, 4 bytes = plain state
+	std::vector<uint8_t> data {0, 0, 0, 0, 0, 0, 0, 0};
 
-	for (size_t i = 0; i < UNIS_IO_CNT; i++) {
+	for (size_t i = 0; i < UNIS_OUT_CNT; i++) {
 		if ((outputs[i] & 0xC0) > 0) {
 			// Non-plain output
-			if (i < 8)
-				data[1] |= (1 << i);
-			else
-				data[0] |= (1 << (i-8));
+			// data 0-3 -> mask
+			data[(i & 0x18) >> 3] |= (1 << (i & 0x07));
+			// and add full data byte
 			data.push_back(outputs[i]);
 		} else {
 			// Plain outputs
 			if (outputs[i] > 0) {
-				if (i < 8)
-					data[5] |= (1 << i);
-				else
-					data[4] |= (1 << (i-8));
+				// data 4-7 -> plain state
+				data[((i & 0x18) >> 3) + 4] |= (1 << (i & 0x07));
 			}
-		}
-	}
-	for (size_t i = UNIS_IO_CNT; i < UNIS_OUT_CNT; i++) {
-		// virtual outputs
-		if (outputs[i] > 0) {
-			if (i < (UNIS_IO_CNT+8))
-				data[3] |= (1 << (i-UNIS_IO_CNT));
-			else
-				data[2] |= (1 << (i-UNIS_IO_CNT-8));
 		}
 	}
 	return data;
@@ -416,24 +399,22 @@ std::vector<uint8_t> MtbUnis::mtbBusOutputsData() const {
 
 std::array<uint8_t, UNIS_OUT_CNT> MtbUnis::moduleOutputsData(const std::vector<uint8_t> &mtbBusData) {
 	std::array<uint8_t, UNIS_OUT_CNT> result;
-	if (mtbBusData.size() < 6)
+	if (mtbBusData.size() < 8)
 		return result; // TODO: report error?
 
-	uint16_t mask = (mtbBusData[0] << 8) | mtbBusData[1];
-	uint32_t fullOutputs = (mtbBusData[2] << 24) | (mtbBusData[3] << 16) | (mtbBusData[4] << 8) | mtbBusData[5];
-	size_t j = 6;
+	uint32_t mask = (mtbBusData[3] << 24) | (mtbBusData[2] << 16) | (mtbBusData[1] << 8) | (mtbBusData[0] << 0);
+	uint32_t fullOutputs = (mtbBusData[7] << 24) | (mtbBusData[6] << 16) | (mtbBusData[5] << 8) | mtbBusData[4];
+	size_t j = 8;
 	// real outputs - full status mask
-	for (size_t i = 0; i < UNIS_IO_CNT; i++) {
+	for (size_t i = 0; i < UNIS_OUT_CNT; i++) {
 		if (((mask >> i) & 1) == 0) {
+			// plain
 			result[i] = (fullOutputs >> i) & 1;
 		} else if (j < mtbBusData.size()) {
+			// full
 			result[i] = mtbBusData[j];
 			j++;
 		}
-	}
-	// virtual outputs - only binary states
-	for (size_t i = UNIS_IO_CNT; i < UNIS_OUT_CNT; i++) {
-		result[i] = (fullOutputs >> i) & 1;
 	}
 
 	return result;
@@ -543,8 +524,9 @@ void MtbUnis::inputsRead(const std::vector<uint8_t> &data) {
 }
 
 void MtbUnis::storeInputsState(const std::vector<uint8_t> &data) {
-	if (data.size() >= 2)
-		this->inputs = (data[0] << 8) | data[1];
+	if (data.size() >= 4)
+		this->inputs = (data[3] << 24) | (data[2] << 16) | (data[1] << 8) | data[0];
+	this->mlog(QString("raw inputs: 0x%1").arg(QString::number(this->inputs, 16)), Mtb::LogLevel::Error);
 }
 
 void MtbUnis::outputsReset() {
@@ -580,8 +562,8 @@ std::vector<uint8_t> MtbUnisConfig::serializeForMtbUsb() const {
 	std::vector<uint8_t> result;
 	std::copy(this->outputsSafe.begin(), this->outputsSafe.end(), std::back_inserter(result));
 	for (size_t i = 0; i < 8; i++)
-		result.push_back(std::min<uint8_t>(this->inputsDelay[2*i], 0xF) |
-		                                   (std::min<uint8_t>(this->inputsDelay[2*i+1], 0xF) << 4));
+		result.push_back( std::min<uint8_t>(this->inputsDelay[2*i], 0xF) |
+		                 (std::min<uint8_t>(this->inputsDelay[2*i+1], 0xF) << 4));
 	result.push_back(this->servoEnabledMask & 0x3F);
 	for (size_t i = 0; i < UNIS_SERVO_OUT_CNT; i++)
 		result.push_back(this->servoPosition[i]);
@@ -589,7 +571,6 @@ std::vector<uint8_t> MtbUnisConfig::serializeForMtbUsb() const {
 		result.push_back(this->servoSpeed[i]);
 	for (size_t i = 0; i < UNIS_SERVO_CNT; i++)
 		result.push_back(this->servoInputMap[i]);
-
 	return result;
 }
 

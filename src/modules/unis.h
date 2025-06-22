@@ -9,9 +9,10 @@ constexpr size_t UNIS_SERVO_CNT = 6;
 constexpr size_t UNIS_SERVO_OUT_CNT = (2*UNIS_SERVO_CNT);
 constexpr size_t UNIS_OUT_CNT = (UNIS_IO_CNT + UNIS_SERVO_OUT_CNT);
 constexpr size_t UNIS_IN_CNT = (UNIS_IO_CNT);
+constexpr size_t UNIS_INALL_CNT = (UNIS_IO_CNT + UNIS_SERVO_OUT_CNT);
 constexpr size_t UNIS_PAGE_SIZE = 256;
 constexpr float UNIS_ADC_BG = 1.22;
-constexpr uint16_t UNIS_FW_DEPRECATED = 0x0200; // FW <= UNIS_DEPRECATED is marked as deprecated
+constexpr uint16_t UNIS_FW_DEPRECATED = 0x01FF; // FW <= UNIS_DEPRECATED is marked as deprecated
 
 struct MtbUnisConfig {
 	std::array<uint8_t, UNIS_OUT_CNT> outputsSafe = {0, };
@@ -47,7 +48,7 @@ class MtbUnis : public MtbModule {
 	friend MtbUnisConfig;
 
 protected:
-	uint16_t inputs;
+	uint32_t inputs;
 	std::array<uint8_t, UNIS_OUT_CNT> outputsWant;
 	std::array<uint8_t, UNIS_OUT_CNT> outputsConfirmed;
 	std::optional<MtbUnisConfig> config;
@@ -65,7 +66,7 @@ protected:
 	void outputsReset();
 	void outputsSet(uint8_t, const std::vector<uint8_t>&);
 	static QJsonObject outputsToJson(const std::array<uint8_t, UNIS_OUT_CNT>&);
-	static QJsonObject inputsToJson(uint16_t inputs);
+	static QJsonObject inputsToJson(uint32_t inputs);
 
 	void jsonSetOutput(QTcpSocket*, const QJsonObject&) override;
 	void jsonUpgradeFw(QTcpSocket*, const QJsonObject&) override;
@@ -85,6 +86,7 @@ protected:
 	static size_t flickMtbUnisToPerMin(uint8_t MtbUnisFlick);
 
 	static void alignFirmware(std::map<size_t, std::vector<uint8_t>>&, size_t pageSize);
+    bool fwDeprecated() const override;
 
 	QJsonObject dvRepr(uint8_t dvi, const std::vector<uint8_t> &data) const override;
 
